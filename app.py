@@ -23,7 +23,9 @@ class InterviewGenerator:
     def generate_interview(self, domain: str, difficulty: str, num_questions: int = 5) -> List[Question]:
         """Generate interview questions with a single API call"""
         prompt = f"""
-        You are an expert in {domain}. Generate {num_questions} {difficulty}-level interview questions.
+        You are an expert in {domain}. Generate {num_questions} {difficulty}-level interview questions
+        which will be asked in a real life interview Or consider yourself as an interviewer and ask questions
+        accordingly.
         Focus strictly on {domain} concepts without deviating into subfields.
         For example, if the domain is Data Science, stay within data science concepts 
         without focusing specifically on machine learning, statistics, or other subfields. 
@@ -45,7 +47,8 @@ class InterviewGenerator:
         1. All questions must be specifically about {domain} at {difficulty} level
         2. Questions should cover difficulty level-based concepts in {domain}
         3. Do not focus on specific subfields or subtopics
-        4. Provide detailed, informative answers
+        4. Provide detailed, informative 5 to 6 line answers depending on the question
+        5. Provide codes when it is necessary, if its coding related question.
         5. Generate exactly {num_questions} questions
         6. Ensure questions are appropriate for {difficulty} level interviews
         """
@@ -129,51 +132,37 @@ def generate_pdf(questions: List[Question]):
 
 # Streamlit UI
 def main():
-    # Get API key from environment variable or user input
-    api_key = os.getenv("GROQ_API_KEY")
+    st.set_page_config(page_title="Interview Question Generator", layout="wide")
+    
+    with st.sidebar:
+        st.header("⚙️ Configuration")
+        api_key = st.text_input("Enter Groq API Key:", type="password")
+        domain = st.text_input("Enter Domain (e.g., Data Science)")
+        difficulty = st.selectbox("Select Difficulty", ["Beginner", "Intermediate", "Expert"])
+        num_questions = st.text_input("Number of Questions(eg., 5,6,20)")
+        generate_btn = st.button("Generate Questions")
+    
+    st.markdown("## 🎓 Interview Question Generator")
+    st.write("Generate domain-specific interview questions with detailed answers.")
+    
     if not api_key:
-        api_key = st.text_input("Enter your Groq API key:")
-        if not api_key:
-            st.warning("API Key is required!")
-            return
+        st.warning("⚠️ Please enter your Groq API Key to proceed.")
+        return
     
-    generator = InterviewGenerator(api_key)
-    
-    # Streamlit inputs
-    st.title("Interview Question Generator")
-    
-    domain = st.text_input("Enter the domain for interview questions (e.g., 'Data Science', 'Marketing'):")
-    
-    difficulty = st.selectbox("Select Difficulty Level", ["beginner", "intermediate", "expert"])
-    
-    num_questions = st.number_input("How many questions would you like to generate?", min_value=1, value=5)
-    
-    if st.button("Generate Questions"):
-        if not domain:
-            st.warning("Please enter a domain.")
-            return
-        
-        # Generate the interview questions
-        st.write(f"Generating {num_questions} {difficulty}-level questions for {domain}...")
+    if generate_btn:
+        st.write(f"### Generating {num_questions} {difficulty}-level questions for {domain}...")
+        generator = InterviewGenerator(api_key)
         questions = generator.generate_interview(domain, difficulty, num_questions)
         
-        # Display results
-        for i, question in enumerate(questions, 1):
-            st.subheader(f"Question {i}")
-            st.write(f"**Domain**: {question.topic}")
-            st.write(f"**Difficulty**: {question.difficulty}")
-            st.write(f"**Q**: {question.question}")
-            st.write(f"**A**: {question.answer}")
-            st.write("-" * 80)
-
-        # PDF Download Button
-        pdf_file = generate_pdf(questions)
-        st.download_button(
-            label="Download Questions as PDF",
-            data=open(pdf_file, "rb").read(),
-            file_name="interview_questions.pdf",
-            mime="application/pdf"
-        )
-
+        if questions:
+            for i, q in enumerate(questions, 1):
+                with st.expander(f"Question {i}"):
+                    st.write(f"**Q:** {q.question}")
+                    st.write(f"**A:** {q.answer}")
+            
+            pdf_file = generate_pdf(questions)
+            with open(pdf_file, "rb") as file:
+                st.download_button("📥 Download PDF", file, file_name="interview_questions.pdf", mime="application/pdf")
+    
 if __name__ == "__main__":
     main()

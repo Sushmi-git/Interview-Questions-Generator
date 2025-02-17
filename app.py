@@ -3,9 +3,7 @@ from typing import List
 from dataclasses import dataclass
 import json
 import os
-import re
 import requests
-from typing import Optional
 from urllib.parse import urlparse
 from fpdf import FPDF
 from openai import OpenAI
@@ -61,39 +59,7 @@ def validate_url(url, timeout=3):
         return response.status_code < 400
     except:
         return False
-def validate_url_access(url: str) -> bool:
-    """Verify if a URL is accessible."""
-    try:
-        response = requests.head(url, timeout=5, allow_redirects=True)
-        return response.status_code == 200
-    except:
-        return False
 
-def search_alternative_url(topic: str, question: str) -> Optional[str]:
-    """Search for alternative reference URLs based on the question content."""
-    search_bases = [
-        "https://docs.python.org/3/",
-        "https://developer.mozilla.org/en-US/docs/",
-        "https://learn.microsoft.com/en-us/docs/",
-        "https://www.geeksforgeeks.org/",
-        "https://www.w3schools.com/",
-        "https://www.tutorialspoint.com/"
-    ]
-    
-    # Extract key terms from question
-    keywords = re.findall(r'\b\w+\b', question.lower())
-    keywords = [word for word in keywords if len(word) > 3]
-    
-    # Try each base URL with the keywords
-    for base in search_bases:
-        try:
-            search_url = f"{base}{'-'.join(keywords[:3])}"
-            if validate_url_access(search_url):
-                return search_url
-        except:
-            continue
-    
-    return None
 
 class InterviewGenerator:
     """Multi-model interview generator"""
@@ -112,12 +78,12 @@ class InterviewGenerator:
         And whenever the same topic is given by user give different questions each and every time 
         based on the difficulty level. 
         
-        For every question and answer, you MUST include a reference link to a reliable source. 
+        For every question and answer, you MUST include a reference link to a reliable valid source. 
         The reference link must be:
         1. A valid, publicly accessible URL for that particular question (starting with http:// or https://)
         2. From a reputable source like academic journals, educational websites, or industry documentation, technical documentation
         3. Directly relevant to the specific question and answer
-        4. If the Link is invalid then alternative valid URLs will be searched
+        4. If the Link is invalid then search for some other valid links
         
         The reference link should be added at the end of the answer in the following format:
         'Source: [URL]'
@@ -133,9 +99,20 @@ class InterviewGenerator:
                 }}
             ]
         }}
+
+        Requirements:
+        1. All questions must be specifically about {topic} at {difficulty} level
+        2. Questions should cover {difficulty} level based concepts in {topic}
+        3. Do not focus on specific subfields or subtopics
+        4. Provide detailed, informative answers
+        5. Generate exactly {num_questions} questions
+        6. Ensure questions are appropriate for {difficulty} level interviews
+        7. Every question MUST have a valid reference URL directly relevant to question and answer and is publicly accessible
+        8. If the source URL is invalid search for other Valid URL
         """
         
         try:
+            # Initialize client with appropriate base URL
             client = OpenAI(
                 api_key=self.api_key,
                 base_url=self.api_config["base_url"]
@@ -156,35 +133,43 @@ class InterviewGenerator:
             )
             
             content = response.choices[0].message.content.strip()
+            
+            # Clean the response to ensure valid JSON
             content = content.replace('\n', ' ').replace('\r', '')
             
-            # Clean JSON content
+            # Remove any non-JSON text before or after the JSON object
             start_idx = content.find('{')
             end_idx = content.rfind('}') + 1
             if start_idx != -1 and end_idx != 0:
                 content = content[start_idx:end_idx]
             
-            data = json.loads(content)
-            questions = []
+            # Parse the JSON
+            try:
+                data = json.loads(content)
+            except json.JSONDecodeError as e:
+                print(f"JSON parsing error: {str(e)}")
+                print(f"Content causing error: {content}")
+                raise
             
+            # Convert to Question objects and validate references
+            questions = []
             for q in data["questions"]:
+                # Extract reference URL if provided
                 answer = q["answer"]
                 reference = q.get("reference", "")
                 
-                # Extract reference from answer if not provided in JSON
+                # If reference not provided in the json structure, try to extract from answer text
                 if not reference and "Source:" in answer:
                     parts = answer.split("Source:")
                     if len(parts) > 1:
+                        # Extract URL after "Source:" text
                         potential_url = parts[-1].strip()
+                        
+                        # Check if potential_url is actually a URL
                         if is_valid_url(potential_url):
                             reference = potential_url
+                            # Optionally remove the source text from answer
                             answer = parts[0].strip()
-                
-                # Validate URL and search for alternative if invalid
-                if not reference or not is_valid_url(reference) or not validate_url_access(reference):
-                    alternative_url = search_alternative_url(topic, q["question"])
-                    if alternative_url:
-                        reference = alternative_url
                 
                 questions.append(Question(
                     question=q["question"],
@@ -198,6 +183,7 @@ class InterviewGenerator:
                 
         except Exception as e:
             print(f"Error generating interview: {str(e)}")
+            # Return a single fallback question
             return [Question(
                 question=f"Please explain a key concept in {topic}",
                 answer="This is a placeholder answer. Please try regenerating the questions.",

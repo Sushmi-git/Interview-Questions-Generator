@@ -26,33 +26,34 @@ class InterviewGenerator:
         prompt = f"""
         You are an expert in {topic}. Generate {num_questions} {difficulty}-level interview questions.
         Focus strictly on {topic} concepts without deviating into subfields.
-
         For example, if the topic is Data Science, stay within data science concepts 
         without focusing specifically on machine learning, statistics, or other subfields. 
-        Whenever the same topic is given, provide different questions each time based on the difficulty level.
-
-        Each answer **must** include a reference link as a source.
-
-        The response MUST be valid JSON in exactly this format:
+        And whenever the same topic is given by user give different questions each and every time 
+        based on the difficulty level. For every question and answer, you must include a reference link 
+        to the source from where the answer was derived.
+        The reference link should be added at the end of the answer in the following format:
+        'Source: [URL]'
+        
+        The response MUST be valid JSON in exactly this format, with no additional text:
         {{
             "topic": "{topic}",
             "questions": [
                 {{
-                    "question": "The question text",
-                    "answer": "The answer text",
-                    "reference": "Valid source link for the answer"
+                    "question": "detailed question text",
+                    "answer": "detailed answer explanation"
                 }}
             ]
         }}
 
         Requirements:
         1. All questions must be specifically about {topic} at {difficulty} level
-        2. Questions should cover {difficulty} level concepts in {topic}
-        3. Provide detailed, informative answers
-        4. **Each answer must contain a valid reference link from a reputable source**
-        5. Ensure proper JSON formatting
+        2. Questions should cover gdifficulty level based concepts in {topic}
+        3. Do not focus on specific subfields or subtopics
+        4. Provide detailed, informative answers
+        5. Generate exactly {num_questions} questions
+        6. Ensure questions are appropriate for {difficulty} level interviews
+        7. Must add reference Link as source fro each and every question
         """
-
         
         try:
             response = self.client.chat.completions.create(
@@ -112,6 +113,8 @@ class InterviewGenerator:
 
 # Create PDF function
 
+# Create PDF function
+
 def generate_pdf(questions: List[Question]):
     class PDF(FPDF):
         def __init__(self):
@@ -122,16 +125,21 @@ def generate_pdf(questions: List[Question]):
             
         def header(self):
             if not self.is_first_page:
-                # Draw full border around page content area
-                self.set_draw_color(0, 0, 0)  # Black color for border
-                self.rect(15, 15, 180, 270)  # Rectangle: x, y, width, height
-                    
+                # Set text color to black for header
+                self.set_text_color(0, 0, 0)
+                self.set_font('Arial', 'B', 12)
+                self.cell(0, 10, 'Interview Questions', 0, 1, 'C')
+                self.ln(5)
+                
+            
         def footer(self):
             if not self.is_first_page:
                 # Set text color to black for footer
                 self.set_text_color(0, 0, 0)
                 self.set_y(-25)
                 
+        
+
         def create_cover_page(self):
             # Background
             self.set_fill_color(0, 47, 255)
@@ -150,12 +158,12 @@ def generate_pdf(questions: List[Question]):
             
             # Title
             self.ln(60)
-            self.set_font('Arial', 'B', 40)
+            self.set_font('Arial', 'B', 45)
             self.cell(0, 20, "Interview Questions", 0, 1, 'C')
             
             # topic
             self.ln(10)
-            self.set_font('Arial', '', 38)
+            self.set_font('Arial', '', 40)
             self.cell(0, 15, self.topic, 0, 1, 'C')
             
             self.is_first_page = False
@@ -172,41 +180,37 @@ def generate_pdf(questions: List[Question]):
     # Reset text color to black for content
     pdf.set_text_color(0, 0, 0)
     
-    # Draw border on the first content page (since header won't draw it on first page)
-    pdf.set_draw_color(0, 0, 0)  # black
-    pdf.rect(15, 15, 180, 250)  # Rectangle: x, y, width, height
-    
     # Content
     for i, question in enumerate(questions, 1):
-        # Question - indent content to give space from border
+        # Question
         pdf.set_font('Arial', 'B', 13)
-        pdf.set_x(20)  # Indent from left margin
-        pdf.multi_cell(170, 10, f"Question {i}:", 0)
+        pdf.multi_cell(0, 10, f"Question {i}:", 0)
         
         pdf.set_font('Arial', '', 12)
-        pdf.set_x(20)  # Indent from left margin
-        pdf.multi_cell(170, 10, question.question)
+        pdf.multi_cell(0, 10, question.question)
         pdf.ln(5)
         
         # Answer
-        pdf.set_x(20)  # Indent from left margin
         # Set text color to red for the word "Answer:"
-        pdf.set_text_color(255, 0, 0)
+        pdf.set_text_color(255, 0, 0)  # RGB for red (255, 0, 0)
+
+        # Set font to Arial, bold, size 13 for the label "Answer:"
         pdf.set_font('Arial', 'B', 13)
         pdf.cell(0, 10, "Answer:", 0, 1)
 
-        # Set text color back to black for the content
-        pdf.set_text_color(0, 0, 0)
+        # Set text color to black for the content (default)
+        pdf.set_text_color(0, 0, 0)  # RGB for black (0, 0, 0)
+
+        # Set font to Arial, normal, size 12 for the content
+        pdf.set_font('Arial', '', 12)
         
-        # Check for code blocks in triple backticks
+        # Handle code blocks in answer
         if "```" in question.answer:
-            # Handle existing triple backtick code blocks
             parts = question.answer.split("```")
             
             # Write text before first code block
             if parts[0].strip():
-                pdf.set_x(20)  # Indent from left margin
-                pdf.multi_cell(170, 10, parts[0].strip())
+                pdf.multi_cell(0, 10, parts[0].strip())
                 pdf.ln(5)
             
             # Process code blocks
@@ -221,8 +225,7 @@ def generate_pdf(questions: List[Question]):
                     # Split code into lines and write each line
                     code_lines = code.split('\n')
                     for line in code_lines:
-                        pdf.set_x(20)  # Indent from left margin
-                        pdf.multi_cell(170, 7, line.rstrip(), fill=True)
+                        pdf.multi_cell(0, 7, line.rstrip(), fill=True)
                     
                     pdf.ln(5)
                     
@@ -231,14 +234,10 @@ def generate_pdf(questions: List[Question]):
                     
                     # Write text after code block
                     if j + 1 < len(parts) and parts[j + 1].strip():
-                        pdf.set_x(20)  # Indent from left margin
-                        pdf.multi_cell(170, 10, parts[j + 1].strip())
+                        pdf.multi_cell(0, 10, parts[j + 1].strip())
                         pdf.ln(5)
         else:
-            # Normal text handling (no code blocks)
-            pdf.set_x(20)  # Indent from left margin
-            pdf.set_font('Arial', '', 12)
-            pdf.multi_cell(170, 10, question.answer)
+            pdf.multi_cell(0, 10, question.answer)
         
         # Add spacing between questions
         pdf.ln(10)
@@ -253,7 +252,6 @@ def generate_pdf(questions: List[Question]):
     pdf_output = "/tmp/interview_questions.pdf"
     pdf.output(pdf_output)
     return pdf_output
-
 
 # Streamlit UI
 def main():

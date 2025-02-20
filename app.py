@@ -424,7 +424,7 @@ def main():
         st.info("""
         **About this app**
         
-        Generate customized interview questions with detailed answers for your preparation or assessment needs. 
+        Generate interview questions with detailed answers. 
         Each set comes with verified references and can be downloaded as a professionally formatted PDF.
         """)
         # Model selection

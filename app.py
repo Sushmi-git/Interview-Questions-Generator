@@ -7,6 +7,8 @@ import requests
 from urllib.parse import urlparse
 from fpdf import FPDF
 from openai import OpenAI
+from typing import Optional
+import time
 
 @dataclass
 class Question:
@@ -14,7 +16,7 @@ class Question:
     answer: str
     difficulty: str
     topic: str
-    reference: str = ""  # Add a reference field
+    reference: str = ""  # Keep this for internal tracking
 
 # API Configuration for different providers
 API_CONFIGS = {
@@ -40,6 +42,9 @@ API_CONFIGS = {
     }
 }
 
+# Reference cache to avoid redundant API calls
+reference_cache = {}
+
 def is_valid_url(url):
     """Basic URL validation"""
     try:
@@ -60,33 +65,94 @@ def validate_url(url, timeout=3):
     except:
         return False
 
+def search_reference(query, topic):
+    """Find relevant references using search APIs, prioritizing scholarly sources before Wikipedia"""
+    cache_key = f"{topic}:{query[:50]}"
+
+    # Check cache first
+    if cache_key in reference_cache:
+        return reference_cache[cache_key]
+
+    # Try different search methods in priority order
+    reference = ""
+
+    # Method 1: Crossref for academic articles (skipping Semantic Scholar)
+    try:
+        crossref_params = {
+            "query": f"{topic} {query}",
+            "rows": 1,
+            "sort": "relevance"
+        }
+        crossref_response = requests.get("https://api.crossref.org/works", params=crossref_params, timeout=5)
+
+        if crossref_response.status_code == 200:
+            results = crossref_response.json().get("message", {}).get("items", [])
+            for item in results:
+                if "URL" in item:
+                    reference = item["URL"]
+                    if validate_url(reference):
+                        reference_cache[cache_key] = reference
+                        return reference
+    except Exception as e:
+        print(f"Crossref API error: {str(e)}")
+
+    # Method 2: Stack Overflow for technical questions
+    if any(tech_term in topic.lower() for tech_term in ["programming", "code", "development", "software", "web", "data", "python", "javascript"]):
+        try:
+            so_url = f"https://api.stackexchange.com/2.3/search/advanced?order=desc&sort=relevance&q={topic}+{query}&site=stackoverflow"
+            so_response = requests.get(so_url, timeout=5)
+
+            if so_response.status_code == 200:
+                items = so_response.json().get("items", [])
+                if items:
+                    reference = items[0].get("link")
+                    if reference and validate_url(reference):
+                        reference_cache[cache_key] = reference
+                        return reference
+        except Exception as e:
+            print(f"Stack Overflow API error: {str(e)}")
+
+    # Method 3 (Fallback): Wikipedia API (only if no other sources worked)
+    try:
+        wiki_query = f"{topic} {' '.join(query.split()[:5])}"
+        wiki_response = requests.get(
+            f"https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch={wiki_query}&format=json"
+        )
+
+        if wiki_response.status_code == 200:
+            results = wiki_response.json().get("query", {}).get("search", [])
+            if results:
+                title = results[0]["title"].replace(" ", "_")
+                wiki_url = f"https://en.wikipedia.org/wiki/{title}"
+                if validate_url(wiki_url):
+                    reference_cache[cache_key] = wiki_url
+                    return wiki_url
+    except Exception as e:
+        print(f"Wikipedia API error: {str(e)}")
+
+    # Return empty if no reference found
+    reference_cache[cache_key] = ""
+    return ""
+
 
 class InterviewGenerator:
-    """Multi-model interview generator"""
+    """Multi-model interview generator with consolidated references section"""
     
     def __init__(self, api_key: str, api_config: dict):
         self.api_key = api_key
         self.api_config = api_config
         
     def generate_interview(self, topic: str, difficulty: str, num_questions: int = 5) -> List[Question]:
-        """Generate interview questions using selected model"""
+        """Generate interview questions using selected model and search for a main reference"""
         prompt = f"""
         You are an expert in {topic}. Generate {num_questions} based on {difficulty}-level interview questions.
         Focus strictly on {topic} concepts without deviating into subfields.
         For example, if the topic is Data Science, stay within data science concepts 
         without focusing specifically on machine learning, statistics, or other subfields. 
         And whenever the same topic is given by user give different questions each and every time 
-        based on the difficulty level. 
+        based on the difficulty level.
         
-        For every question and answer, you MUST include a reference link to a reliable valid source. 
-        The reference link must be:
-        1. A valid, publicly accessible URL for that particular question (starting with http:// or https://)
-        2. From a reputable source like academic journals, educational websites, or industry documentation, technical documentation
-        3. Directly relevant to the specific question and answer
-        4. If the Link is invalid then search for some other valid links
-        
-        The reference link should be added at the end of the answer in the following format:
-        'Source: [URL]'
+        DO NOT INCLUDE ANY REFERENCES OR SOURCES IN YOUR ANSWERS. I will find references separately.
         
         The response MUST be valid JSON in exactly this format, with no additional text:
         {{
@@ -94,8 +160,7 @@ class InterviewGenerator:
             "questions": [
                 {{
                     "question": "detailed question text",
-                    "answer": "detailed answer explanation",
-                    "reference": "valid URL to source material"
+                    "answer": "detailed answer explanation"
                 }}
             ]
         }}
@@ -107,8 +172,7 @@ class InterviewGenerator:
         4. Provide detailed, informative answers
         5. Generate exactly {num_questions} questions
         6. Ensure questions are appropriate for {difficulty} level interviews
-        7. Every question MUST have a valid reference URL directly relevant to question and answer and is publicly accessible
-        8. If the source URL is invalid search for other Valid URL
+        7. DO NOT include any references, sources, or URLs in your response
         """
         
         try:
@@ -151,32 +215,29 @@ class InterviewGenerator:
                 print(f"Content causing error: {content}")
                 raise
             
-            # Convert to Question objects and validate references
+            # Just find one main reference for the topic
+            with st.status(f"Finding main reference for {topic}...", expanded=False):
+                main_reference = search_reference(topic, topic)
+            
+            # Convert to Question objects
             questions = []
-            for q in data["questions"]:
-                # Extract reference URL if provided
-                answer = q["answer"]
-                reference = q.get("reference", "")
-                
-                # If reference not provided in the json structure, try to extract from answer text
-                if not reference and "Source:" in answer:
-                    parts = answer.split("Source:")
-                    if len(parts) > 1:
-                        # Extract URL after "Source:" text
-                        potential_url = parts[-1].strip()
-                        
-                        # Check if potential_url is actually a URL
-                        if is_valid_url(potential_url):
-                            reference = potential_url
-                            # Optionally remove the source text from answer
-                            answer = parts[0].strip()
-                
+            for idx, q in enumerate(data["questions"]):
                 questions.append(Question(
                     question=q["question"],
-                    answer=answer,
+                    answer=q["answer"],
                     difficulty=difficulty,
                     topic=topic,
-                    reference=reference
+                    reference="" # Individual references not needed in final output
+                ))
+            
+            # Add one more question that contains the reference
+            if main_reference:
+                questions.append(Question(
+                    question="References",
+                    answer=f"For more information about {topic}, please refer to the following resource.",
+                    difficulty=difficulty,
+                    topic=topic,
+                    reference=main_reference
                 ))
             
             return questions
@@ -205,7 +266,7 @@ def generate_pdf(questions: List[Question]):
             if not self.is_first_page:
                 # Set text color to black for header
                 self.set_text_color(0, 0, 0)
-                self.set_font('Arial', 'B', 12)
+                self.set_font('Arial', 'B', 14)
                 self.cell(0, 10, 'Interview Questions', 0, 1, 'C')
                 self.ln(5)
                 
@@ -233,12 +294,12 @@ def generate_pdf(questions: List[Question]):
             
             # Title
             self.ln(60)
-            self.set_font('Arial', 'B', 45)
+            self.set_font('Arial', 'B', 40)
             self.cell(0, 20, "Interview Questions", 0, 1, 'C')
             
             # topic
-            self.ln(10)
-            self.set_font('Arial', '', 40)
+            self.ln(5)
+            self.set_font('Arial', '', 35)
             self.cell(0, 15, self.topic, 0, 1, 'C')
             
             self.is_first_page = False
@@ -255,8 +316,12 @@ def generate_pdf(questions: List[Question]):
     # Reset text color to black for content
     pdf.set_text_color(0, 0, 0)
     
-    # Content
-    for i, question in enumerate(questions, 1):
+    # Separate regular questions from the reference question
+    regular_questions = [q for q in questions if q.question != "References"]
+    reference_question = next((q for q in questions if q.question == "References"), None)
+    
+    # Content - Regular questions
+    for i, question in enumerate(regular_questions, 1):
         # Question
         pdf.set_font('Arial', 'B', 13)
         pdf.multi_cell(0, 10, f"Question {i}:", 0)
@@ -314,27 +379,40 @@ def generate_pdf(questions: List[Question]):
         else:
             pdf.multi_cell(0, 10, question.answer)
         
-        # Add reference if available
-        if question.reference:
-            pdf.ln(5)
-            pdf.set_font('Arial', 'I', 10)
-            pdf.set_text_color(0, 0, 255)  # Blue for references
-            pdf.cell(0, 10, f"Source: {question.reference}", 0, 1, 'L', link=question.reference)
-            pdf.set_text_color(0, 0, 0)  # Reset to black
-        
         # Add spacing between questions
         pdf.ln(10)
         
         # Add separator line between questions
-        if i < len(questions):
+        if i < len(regular_questions):
             pdf.set_draw_color(200, 200, 200)
             pdf.line(20, pdf.get_y(), 190, pdf.get_y())
             pdf.ln(10)
+    
+    # Modify the reference section in the generate_pdf function:
+    if reference_question and reference_question.reference:
+        pdf.ln(10)
+        pdf.set_draw_color(0, 0, 0)
+        pdf.line(20, pdf.get_y(), 190, pdf.get_y())
+        pdf.ln(15)
+        
+        # References header - Modern Web Style
+        pdf.set_font('Arial', 'B', 14)
+        pdf.cell(0, 10, "Further Reading", 0, 1, 'L')
+        pdf.ln(5)
+        
+        # Topic heading
+        pdf.set_font('Arial', 'B', 12)
+        pdf.cell(0, 10, f"{questions[0].topic} Fundamentals", 0, 1, 'L')
+        
+        # Reference link
+        pdf.set_font('Arial', '', 10)
+        pdf.set_text_color(0, 0, 255)  # Blue for references
+        pdf.cell(0, 10, f"[View Article]({reference_question.reference})", 0, 1, 'L', link=reference_question.reference)
 
-    # Save the PDF
-    pdf_output = "/tmp/interview_questions.pdf"
-    pdf.output(pdf_output)
-    return pdf_output
+        # Save the PDF
+        pdf_output = "/tmp/interview_questions.pdf"
+        pdf.output(pdf_output)
+        return pdf_output
 
 # Streamlit UI
 def main():
@@ -342,7 +420,13 @@ def main():
     
     with st.sidebar:
         st.header("⚙️ Configuration")
+        # Add app info
+        st.info("""
+        **About this app**
         
+        Generate customized interview questions with detailed answers for your preparation or assessment needs. 
+        Each set comes with verified references and can be downloaded as a professionally formatted PDF.
+        """)
         # Model selection
         selected_model = st.selectbox(
             "Select Model",
@@ -358,13 +442,26 @@ def main():
         # Other config options
         topic = st.text_input("Enter topic (e.g., Data Science)")
         difficulty = st.selectbox("Select Difficulty", ["Beginner", "Intermediate", "Expert"])
-        num_questions = st.number_input("Number of Questions", min_value=1, max_value=20, value=5)
-        validate_links = st.checkbox("Validate reference links", value=True)
+        num_questions = st.text_input("Number of Questions", value="5")
+        # Convert to integer safely
+        try:
+            num_questions = int(num_questions)
+        except ValueError:
+            num_questions = 5  # Default value if input is invalid
+        
+        with st.expander("Advanced Options"):
+            use_cache = st.checkbox("Use reference cache", value=True, 
+                                   help="Reuse previously found references for similar questions")
+            clear_cache = st.button("Clear Reference Cache")
+            if clear_cache:
+                reference_cache.clear()
+                st.success("Reference cache cleared!")
+        
         generate_btn = st.button("Generate Questions")
     
-    st.markdown("## 🎓 Interview Question Generator")
+    st.markdown("## 🎓 Interview Questions Generator")
     model_info = f"Using: {selected_model}"
-    st.write(f"Generate topic-specific interview questions with detailed answers and validated references. {model_info}")
+    st.write(f"Generate topic-specific interview questions with detailed answers and a single reference section. {model_info}")
     
     if not api_key:
         st.warning(f"⚠️ Please enter your {api_key_prefix.capitalize()} API Key to proceed.")
@@ -375,26 +472,43 @@ def main():
             try:
                 api_config = API_CONFIGS[selected_model]
                 generator = InterviewGenerator(api_key, api_config)
+                
+                # If cache is disabled, clear it before generating
+                if not use_cache:
+                    reference_cache.clear()
+                
                 questions = generator.generate_interview(topic, difficulty, int(num_questions))
                 
                 if questions:
-                    # Validate references if option selected
-                    if validate_links:
-                        with st.status("Validating reference links..."):
-                            for q in questions:
-                                if q.reference:
-                                    is_valid = validate_url(q.reference)
-                                    if not is_valid:
-                                        st.warning(f"Invalid reference detected: {q.reference}")
-                                        q.reference += " (Link might be invalid)"
+                    # Filter out the reference question for display
+                    display_questions = [q for q in questions if q.question != "References"]
+                    reference_question = next((q for q in questions if q.question == "References"), None)
                     
-                    for i, q in enumerate(questions, 1):
+                    # Display questions without references
+                    for i, q in enumerate(display_questions, 1):
                         with st.expander(f"Question {i}"):
                             st.write(f"**Q:** {q.question}")
                             st.write(f"**A:** {q.answer}")
-                            if q.reference:
-                                st.write(f"**Source:** [{q.reference}]({q.reference})")
                     
+                    # Display reference section if available
+                    # Display reference section if available
+                    if reference_question and reference_question.reference:
+                        st.write("---")
+                        st.write("### 📚 Further Reading")
+                        st.write(f"**{topic} **")
+                        st.markdown(f"({reference_question.reference})")
+                        
+                        # Count reference sources for analytics
+                        domain = urlparse(reference_question.reference).netloc
+                        reference_source = "Wikipedia" if "wikipedia" in domain else \
+                                        "Stack Overflow" if "stackoverflow" in domain else \
+                                        "Crossref" if ("crossref" in domain or "doi.org" in domain) else \
+                                        "Documentation" if any(doc in domain for doc in ["docs.", "documentation", "developer."]) else \
+                                        "Other"
+                        
+                        st.write(f"Source type: {reference_source}")
+                    
+                    # Generate and offer PDF download
                     pdf_file = generate_pdf(questions)
                     with open(pdf_file, "rb") as file:
                         st.download_button(
@@ -403,6 +517,7 @@ def main():
                             file_name="interview_questions.pdf",
                             mime="application/pdf"
                         )
+                        
             except Exception as e:
                 st.error(f"Error: {str(e)}")
                 st.error("Please try again with different parameters.")
